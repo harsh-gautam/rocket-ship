@@ -122,7 +122,11 @@ Foundry value vs others:
 - No need to combine separate job schedulers (e.g., ADF + Databricks + external lineage); Foundry handles orchestration and lineage in one system.
 
 ```mermaid
-
+flowchart LR
+    A["Source Snapshot/Delta"] --> B["Identify Inserts and Updates"]
+    C["Previous Dimension"] --> B
+    B --> D["Overwrite Changed Attributes"]
+    D --> E["Type 1 Dimension (Current State Only)"]
 ```
 
 ### Insurance example (policyholder email)
@@ -171,7 +175,23 @@ Foundry value vs others:
 - Built-in recomputation semantics mean schema/logic changes automatically propagate; in cloud-native stacks, this usually requires explicit job orchestration and dependency management.
 
 ```mermaid
+flowchart LR
+    A["Source Snapshot/Delta"] --> B["Compare Attributes by Business Key"]
+    C["Current SCD2 Rows"] --> B
 
+    B --> D["No Change"]
+    B --> E["Detected Change"]
+
+    D --> F["Keep Existing Current Row"]
+    E --> G["End-Date Old Current Row"]
+    E --> H["Insert New Versioned Row"]
+
+    I["Historical Rows (Already Closed)"] --> J["Combine with Updated Set"]
+    F --> J
+    G --> J
+    H --> J
+
+    J --> K["Type 2 Dimension (Versioned Rows)"]
 ```
 
 ### Insurance example (policy address history)
@@ -246,7 +266,23 @@ Foundry value vs others:
 - Centralized access control and object model; no need to federate IAM/policies across separate services.
 
 ```mermaid
+flowchart LR
+    A["Source Snapshot/Delta"] --> B["Join with Existing Rows"]
+    C["Previous Type 3 Dimension"] --> B
 
+    B --> D["No Attribute Change"]
+    B --> E["Attribute Change"]
+
+    D --> F["Retain Row As-Is"]
+    E --> G["Shift Current to Previous Column"]
+    E --> H["Set New Current Value"]
+
+    G --> I["Rebuilt Type 3 Row"]
+    H --> I
+    F --> J["Collect All Rows"]
+    I --> J
+
+    J --> K["Type 3 Dimension (Current + Previous Columns)"]
 ```
 
 ### Insurance example (customer segment current/previous)
@@ -312,7 +348,25 @@ Foundry value vs others:
 - Dataset versioning supports audit/regulatory use cases with minimal additional engineering compared to piecing together logs/Delta history across tools.
 
 ```mermaid
+flowchart LR
+    A["Source Snapshot/Delta"] --> B["Compare Source with Current Dimension"]
+    C["Current Dimension Table"] --> B
+    D["History Table"] --> E["Append Changed Versions"]
 
+    B --> F["No Change"]
+    B --> G["Detected Change"]
+
+    G --> H["Write Old Current Row to History"]
+    G --> I["Update Current Row with New Values"]
+
+    H --> E
+    E --> J["Updated History Table"]
+
+    I --> K["Updated Current Dimension Table"]
+    F --> L["Keep Current Rows"]
+
+    K --> M["Type 4 Current Dimension"]
+    J --> N["Type 4 History Dimension"]
 ```
 
 ### Insurance example (agent commission plan history)
@@ -376,7 +430,29 @@ Foundry value vs others:
 - Reuse of the same mini-dimension in many downstream contexts is handled by dependency graph; in cloud platforms this often requires explicit coordination across multiple jobs and services.
   
 ```mermaid
+flowchart LR
+    A["Source Snapshot/Delta"] --> B["Derive Volatile Attribute Profile"]
+    C["Previous Mini-Dimension"] --> D["Check Existing Profiles"]
+    E["Previous Core Dimension"] --> F["Update Core Rows"]
 
+    B --> G["Compute Profile Key"]
+    G --> D
+
+    D --> H["Existing Profile"]
+    D --> I["New Profile"]
+
+    I --> J["Insert into Mini-Dimension"]
+    H --> K["Reuse Existing Mini-Dim Key"]
+
+    J --> L["Updated Mini-Dimension"]
+    K --> M["Link to Core Dimension"]
+    L --> M
+
+    M --> F
+    F --> N["Updated Core Dimension (Type 1 + Mini-Dim Key)"]
+
+    N --> O["Type 5 Core Dimension"]
+    L --> P["Type 5 Mini-Dimension"]
 ```
   
 ### Insurance example (policy core + behavior mini-dim)
@@ -445,7 +521,32 @@ Foundry value vs others:
 - Versioned logic and data make it easier to compare different SCD strategies over time and revert if needed, without stitching together multiple data lake / job history systems.
 
 ```mermaid
+flowchart LR
+    A["Source Snapshot/Delta"] --> B["Current Rows for Each Key"]
+    C["Previous SCD6 Dimension"] --> B
+    B --> D["Classify Attribute Changes"]
 
+    D --> E["SCD2 Attribute Change"]
+    D --> F["Type1-Only Attribute Change"]
+    D --> G["No Change"]
+
+    E --> H["End-Date Current Row"]
+    E --> I["Insert New Versioned Row"]
+
+    F --> J["Update Type1 Columns In Place"]
+
+    G --> K["Retain Row As-Is"]
+
+    H --> L["Updated Historical Set"]
+    I --> L
+    J --> M["Updated Current Set"]
+    K --> M
+
+    L --> N["Final SCD6 Historical Rows"]
+    M --> O["Final SCD6 Current Rows"]
+
+    N --> P["Type 6 Dimension (Historical Part)"]
+    O --> Q["Type 6 Dimension (Current Part)"]
 ```
 
 ### Insurance example (customer address SCD2, name Type1)
