@@ -9,7 +9,7 @@
 ---   
     
 ## TL;DR  
-Palantir Foundry outshines other data pipeline solutions (AWS, GCP, Azure ADF, DataBricks, Spark Declarative Pipelines) in handling of Slow-Chaning dimensions, esp. when it comes to mission critical e[...]
+Palantir Foundry outshines other data pipeline solutions (AWS, GCP, Azure ADF, DataBricks, Spark Declarative Pipelines) in handling of Slow-Chaning dimensions, esp. when it comes to mission critical enterprise data - high voloume, high variety, high scrutiny, lineage and auditability, high security.
 This is a summary view of all the benefits of Foundry.  
   
 ```mermaid
