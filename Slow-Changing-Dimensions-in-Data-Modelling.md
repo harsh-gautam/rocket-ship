@@ -162,7 +162,7 @@ Foundry value vs others:
 - No need to combine separate job schedulers (e.g., ADF + Databricks + external lineage); Foundry handles orchestration and lineage in one system.
 
 ```mermaid
-flowchart LR
+flowchart TD
     A["Source Snapshot/Delta"] --> B["Identify Inserts and Updates"]
     C["Previous Dimension"] --> B
     B --> D["Overwrite Changed Attributes"]
