@@ -6,7 +6,7 @@ Spark 4.1 improves the developer experience with faster Python support, more cap
 
 # Key Highlights in Spark 4.1
 
-## 1. Spark Declarative Pipelines (SDP)
+## 1.Spark Declarative Pipelines (SDP) [sdp](https://github.com/sreebhavya10/rocket-ship/blob/main/Self%20Declarative%20Pipeline.md)
 A new declarative framework where users define what datasets and queries should exist, and Spark manages how they execute.
 
 ### Key capabilities:
