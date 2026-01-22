@@ -1,4 +1,4 @@
-# Self‑Declarative Pipelines: A Palantir Foundry Perspective (with Foundry‑Native Examples)
+# Self‑Declarative Pipelines: A Palantir Foundry Perspective
 
 ## Collab
 1. [Ankita Hatibaruah](https://github.com/Ahb98), [LinkedIn](http://linkedin.com/in/ankita-hatibaruah-bb2a62218)
