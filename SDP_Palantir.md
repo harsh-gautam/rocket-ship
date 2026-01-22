@@ -19,3 +19,6 @@ Data engineering is moving from imperative, job‑centric orchestration to datas
 
 ## Why this matters (especially for Foundry)
 Foundry emphasizes dataset lineage, governed modeling (Ontology), incremental recomputation, and separation between what data represents and how it’s computed. The dataset‑centric style you learn from SDP aligns naturally with Foundry’s core apps and best practices—only here you also get enterprise‑grade lineage, access control, checks, and auditing as first‑class.
+
+## The Dataflow Graph (in Foundry)
+In Foundry, the DAG is explicit in Data Lineage: transforms (nodes) consume input datasets and produce output datasets; lineage updates as you build. You can explore ancestor/descendant relationships, see schemas and last build times, and color or snapshot parts of the graph for collaboration.
