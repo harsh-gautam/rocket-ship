@@ -45,7 +45,7 @@ Core Architectural Elements:
 - Model Artifacts + Adapters: Models are packaged with metadata and adapters that standardize inference and deployment.
 
 - Modeling Objectives: Serve as the control plane for experimentation, evaluation, promotion, and deployment of models tied to business objectives.
-
+[Modelling Objective](https://github.com/achaudhury7378/rocket-ship/blob/patch-2/images/Screenshot%202026-02-03%20214523.png)
 
 This architecture tightly couples features, experiments, models, and deployments into a single lifecycle.
   
@@ -181,7 +181,141 @@ Palantir Foundry provides native components and libraries that collectively enab
 | **External Integrations** | Optional integration with external model hosting             |
 
 ---
+## Example how to do
+Say we have a example model like 
+```python
+import pandas as pd
+import numpy as np
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler, OneHotEncoder
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error
+import joblib
 
+
+
+# Display basic info
+print("Dataset shape:", df.shape)
+print("\nFirst few rows:")
+print(df.head())
+print("\nData types:")
+print(df.dtypes)
+print("\nBasic statistics:")
+print(df.describe())
+
+# Separate features and target
+X = df.drop('charges', axis=1)
+y = df['charges']
+
+# Split the data
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+# Define numerical and categorical features
+numerical_features = ['age', 'bmi', 'children']
+categorical_features = ['sex', 'smoker', 'region']
+
+# Create preprocessing pipelines for both numerical and categorical data
+numerical_transformer = StandardScaler()
+categorical_transformer = OneHotEncoder(drop='first', sparse_output=False)
+
+# Combine preprocessing steps
+preprocessor = ColumnTransformer(
+    transformers=[
+        ('num', numerical_transformer, numerical_features),
+        ('cat', categorical_transformer, categorical_features)
+    ])
+
+# Create the complete pipeline with Random Forest
+pipeline = Pipeline(steps=[
+    ('preprocessor', preprocessor),
+    ('regressor', RandomForestRegressor(n_estimators=100, random_state=42, max_depth=10))
+])
+
+print("\n" + "="*60)
+print("Training the model...")
+print("="*60)
+
+# Train the model
+pipeline.fit(X_train, y_train)
+
+# Make predictions
+y_pred_train = pipeline.predict(X_train)
+y_pred_test = pipeline.predict(X_test)
+
+# Evaluate the model
+print("\n" + "="*60)
+print("MODEL PERFORMANCE")
+print("="*60)
+
+print("\nTraining Set:")
+print(f"  R² Score: {r2_score(y_train, y_pred_train):.4f}")
+print(f"  RMSE: ${np.sqrt(mean_squared_error(y_train, y_pred_train)):,.2f}")
+print(f"  MAE: ${mean_absolute_error(y_train, y_pred_train):,.2f}")
+
+print("\nTest Set:")
+print(f"  R² Score: {r2_score(y_test, y_pred_test):.4f}")
+print(f"  RMSE: ${np.sqrt(mean_squared_error(y_test, y_pred_test)):,.2f}")
+print(f"  MAE: ${mean_absolute_error(y_test, y_pred_test):,.2f}")
+
+# Show sample predictions
+print("\n" + "="*60)
+print("SAMPLE PREDICTIONS (First 10 from test set)")
+print("="*60)
+comparison_df = pd.DataFrame({
+    'Actual': y_test.values[:10],
+    'Predicted': y_pred_test[:10],
+    'Difference': y_test.values[:10] - y_pred_test[:10]
+})
+print(comparison_df.to_string(index=False))
+```
+Now since we have the model ready we need to tell palantir how this model acessed and needs to be used for which we need a adapter code like following 
+```python
+import palantir_models as pm
+
+
+class InsuranceModelAdapter(pm.ModelAdapter):
+    @pm.auto_serialize(
+        model=pm.serializers.DillSerializer()
+    )
+    def __init__(self, model):
+        self.model = model
+
+    @classmethod
+    def api(cls):
+        columns = [('age', int), ('sex', str), ('bmi', float), ('children', int), ('smoker', str), ('region', str)]
+        return {"df_in":pm.Pandas(columns)},{"df_out": pm.Pandas(columns+[("chargeAmnt",float)])}
+
+    def predict(self, df_in):
+        numerical_features = ['age', 'bmi', 'children']
+        categorical_features = ['sex', 'smoker', 'region']
+
+        prediction_features = numerical_features+categorical_features
+        df_in["chargeAmnt"] = self.model.predict(df_in[prediction_features])
+
+        return df_in
+```
+Once both of them are ready this means we are ready to register the model
+
+```python
+# Load the autoreload extension and automatically reload all modules
+%load_ext autoreload
+%autoreload 2
+from palantir_models.code_workspaces import ModelOutput
+from insurance_model_adapter import InsuranceModelAdapter # Update if class or file name changes
+
+# Wrap the trained model in a model adapter for Foundry
+insurance_model_adapter = InsuranceModelAdapter(pipeline)
+
+# Get a writable reference to your model resource.
+model_output = ModelOutput("insurance_model")
+model_output.publish(insurance_model_adapter) # Publishes the model to Foundry
+```
+Once the model registration is sucessful  we can move to modelling to deploy it.
+Like following we can directly run the model and check the values [Deploy](https://github.com/achaudhury7378/rocket-ship/blob/patch-2/images/Screenshot%202026-02-04%20000524.png)
+We can alos check the deployement logs like following [deployment logs](https://github.com/achaudhury7378/rocket-ship/blob/patch-2/images/Screenshot%202026-02-04%20000524.png)
+We can set checks and evaluation metrics so thatany new model gets released we run a evaluation on a data and check if the values are within our said threshold [Evaluation Metrics](https://github.com/achaudhury7378/rocket-ship/blob/patch-2/images/Screenshot%202026-02-04%20001017.png)
 ## Comparison with Other MLOps Tools
 The table below compares Palantir Foundry with common MLOps tools, including MLflow, across core lifecycle capabilities.
 | Capability | Palantir Foundry | MLflow | Kubeflow | AWS SageMaker |
