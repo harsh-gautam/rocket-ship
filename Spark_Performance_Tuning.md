@@ -1,6 +1,6 @@
 # 10 Spark Anti-Patterns That Kill Performance (And How to Fix Them)
 
-## Collab
+## Contributiors:
 
 ## Introduction
 If you've spent any real time running Spark jobs in production, you've hit at least one of these walls: a job that silently balloons from 10 minutes to 4 hours, a driver that OOMs for no obvious reason, or a single task that runs 100x longer than every other task in its stage. These aren't bad luck - they're almost always the result of a handful of recurring anti-patterns.
@@ -26,6 +26,10 @@ Spark can push filters and column selections down into the file scan itself (esp
 - Null rows participate in the join
 - Wasted compute and network resources
 
+<table>
+<tr>
+<td>
+
 ```
 df = claims.join(customers, "customer_id", "inner") \
     .join(policies, "policy_id", "inner") \
@@ -37,11 +41,25 @@ df = df.filter(col("claim_amount").isNotNull())
 
 ```
 
+</td>
+<td>
+
+![Performance optimization](images/spark_optimization_1_1.png)
+
+</td>
+</tr>
+</table>
+
+
+
 **After:**
 
 **Benefit -**
 - Drastically reduced memory footprint
 - Nulls never enter the pipeline
+<table>
+<tr>
+<td>
 
 ```
 # Only required columns selected upfront, filter applied early
@@ -53,6 +71,14 @@ claims_df = (
 customers_df = customers.select("customer_id", "city", "state")
 df = claims_df.join(customers_df, "customer_id", "inner")
 ```
+</td>
+<td>
+
+![performance_optimization_after](images/spark_optimization_1_2.png)
+
+</td>
+</tr>
+</table>
 
 > **Rule of thumb:** *Filter rows and trim columns before the join, not after. Same result, far less data shuffled.*
 
