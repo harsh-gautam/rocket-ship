@@ -30,7 +30,11 @@ result = (
 )
 ```
 
-**Problem -** Full datasets loaded into memory, all columns carried through the join causing unnecessary memory overhead & I/O
+<img src="./images/spark_optimization_1_0.png" width="50%" align="center" alt="Pruning & Predicate Pushdown Unoptimized Query Plan" /><br>
+
+<img src="./images/spark_optimization_1_1.png" width="80%" align="center" alt="Pruning & Predicate Pushdown Unoptimized build time" /><br>
+
+**Problem -** Full datasets loaded into memory, all rows carried through the join causing unnecessary memory overhead & I/O
 
 **Impact -** Null `claim_amount` rows (CLM005, CLM009) participate in the join before being dropped and wasted compute resources moving columns nobody asked for
 
@@ -48,11 +52,13 @@ result = (
 )
 ```
 
-**Benefits -**
-- Drastically reduced memory footprint
-- The two null-amount claims never enter the join at all
+<img src="./images/spark_optimization_1_3.png" width="50%" align="center" alt="Pruning & Predicate Pushdown optimized Query Plan" /><br>
 
-> **Rule of thumb:** *Filter rows and trim columns before the join, not after. Same result, far less data shuffled.*
+<img src="./images/spark_optimization_1_2.png" width="80%" align="center" alt="Pruning & Predicate Pushdown optimized build time" /><br>
+
+**Benefits -** Drastically reduced memory footprint and nulls never the join at all
+
+> **Pro Tip:** *Spark's Catalyst optimizer pushes filters and column selections down to the file scan automatically - but only when it can prove doing so is safe. The moment a UDF, an outer join, or a non-deterministic expression is involved, that guarantee disappears. Making a habit of writing filters and select() statements before a join or UDF, rather than relying on Catalyst to rearrange them, keeps performance consistent and predictable across production pipelines - same result, far less data shuffled.*
 
 ## 2. Avoid Cross Join Unless One Side Is Tiny
 A cross join pairs every row on one side with every row on the other. In production, matching every claim against every hospital record - even though you only wanted hospitals in the same state - could mean millions of unnecessary row combinations. Without an actual join key, Spark can't use efficient join strategies (like sort-merge join); it's forced to compute every possible pairing, which grows explosively as data volume grows.
@@ -62,18 +68,14 @@ A cross join pairs every row on one side with every row on the other. In product
 **Before:**
 ```python
 result = claims_df.crossJoin(hospitals_df) \
-    .filter(claims_df.state == hospitals_df.state)
+    .filter(claims_df.state == hospitals_df.hospital_state) \
+    .filter(hospitals_df.hospital_active == True)
 ```
+<img src="./images/spark_optimization_2_0.png" width="80%" align="center" alt="Cross Join Unoptimized Build Time" /><br>
 
-**Problem -**
-- Every claim gets paired with every hospital before any filtering happens
-- No join key means Spark can't use join strategies - it's forced into a brute-force nested loop
-- The filter condition (`state == state`) reveals there was a real join key all along - it just applied too late
+**Problem -** Every claim gets paired with every hospital before any filtering happens. With no join key, Spark can't use an efficient join strategy - it's forced into a brute-force nested loop. The filter condition (state == state) reveals there was a real join key all along; it just got applied too late.
 
-**Impact -**
-- Row count explodes before the filter discards most of it (with 15 claims × 6 hospitals that's only 90 rows here, but at production scale - millions of claims × thousands of hospitals - this becomes untenable)
-- Massive shuffle and compute spent building rows that never survive the filter
-- High risk of executor OOM or a stage that never finishes as data volumes grow
+**Impact -** Row count explodes before the filter can discard most of it - with 15 claims × 6 hospitals that's only 90 rows here, but at production scale (millions of claims × thousands of hospitals), this becomes untenable. Massive shuffle and compute get spent building rows that never survive the filter, creating a high risk of executor OOM or a stage that never finishes as data volumes grow.
 
 **After:**
 ```python
@@ -87,12 +89,11 @@ result = claims_df.join(
 )
 ```
 
-**Benefits -**
-- Spark can choose an efficient strategy (sort-merge or broadcast join) instead of brute-forcing every pairing
-- Row count stays proportional to matching keys, not the full cross product
-- Filtering the inactive hospital (H004) out beforehand shrinks the build side further, reducing shuffle volume and memory pressure
+<img src="./images/spark_optimization_2_1.png" width="80%" align="center" alt="Cross Join Unoptimized Build Time" /><br>
 
-> **Rule of thumb:** *If you're filtering right after a crossJoin, that filter condition is almost always meant to be your join key. Use join() with a real condition instead.*
+**Benefits -** With a real join key in place, Spark can choose an efficient strategy - sort-merge or broadcast join - instead of brute-forcing every pairing, keeping row count proportional to matching keys rather than the full cross product. Filtering out the inactive hospital (H004) beforehand shrinks the build side further, reducing both shuffle volume and memory pressure.
+
+> **Pro Tip:** *If you're filtering right after a crossJoin, that filter condition is almost always meant to be your join key. Use join() with a real condition instead.*
 
 ## 3. Aggregate or Deduplicate Before Joining
 If your end goal is a summary (a sum, a count, an average) or a clean one-row-per-key dataset, joining the raw/duplicate-laden data first and cleaning up after means the join processes every single row - even though most of that detail or duplication gets thrown away moments later. The cost of a join scales with how many rows go into it. Summarizing or deduplicating first shrinks the data before the expensive part even starts.
@@ -101,18 +102,17 @@ If your end goal is a summary (a sum, a count, an average) or a clean one-row-pe
 
 **Before:**
 ```python
-result = claims_df.join(customers_df, "customer_id") \
-    .groupBy("customer_id") \
+result = (
+    claims_df.join(customers_df, "customer_id")
+    .groupBy("customer_id")
     .agg(F.sum("claim_amount").alias("total_claims"))
+)
 ```
+<img src="./images/spark_optimization_3_1.png" width="80%" align="center" alt="Aggregate Unoptimized Build Time" /><br>
 
-**Problem -**
-- The join runs on every raw claim row, not the final summarized rows
-- Unnecessary customer columns participate in the join, adding memory pressure and shuffle overhead
+**Problem -** The join runs on every raw claim row instead of the final summarized rows, and unnecessary customer columns participate in the join, adding memory pressure and shuffle overhead.
 
-**Impact -**
-- Shuffle scales with total claims (15 rows here, millions in production) instead of distinct customers (10 rows here)
-- Wasted compute joining detail that gets discarded right after
+**Impact -** Shuffle scales with total claims (15 rows here, millions in production) instead of distinct customers (10 rows here), wasting compute on joining detail that gets discarded right after.
 
 **After:**
 ```python
@@ -122,10 +122,9 @@ agg_claims = claims_df.groupBy("customer_id") \
 result = agg_claims.join(customers_df, "customer_id")
 ```
 
-**Benefits -**
-- Join operates on far fewer rows - one per customer, not one per claim
-- Smaller shuffle, less memory pressure, faster runtime
-- Same result, since aggregation and join order don't change correctness here
+<img src="./images/spark_optimization_3_0.png" width="80%" align="center" alt="Cross Join Unoptimized Build Time" /><br>
+
+**Benefits -** The join now operates on far fewer rows - one per customer, not one per claim - resulting in a smaller shuffle, less memory pressure, and faster runtime. The result stays the same, since aggregation and join order don't change correctness here.
 
 ### Part B: Deduplicate Before Joining
 Duplicates are just as costly as unaggregated details - a customer record ingested twice by an upstream system causes a fan-out on every join, multiplying rows that get discarded moments later anyway.
@@ -137,7 +136,7 @@ result = claims_df.join(customers_df, "customer_id") \
     .dropDuplicates(["claim_id"])
 ```
 
-**Problem -**
+**Problem -** 
 - The join runs against every duplicate customer row, not just distinct ones
 - Each duplicate on the `customers_df` side fans out - one claim can multiply into 2, 3, or more rows before `dropDuplicates` cleans it up
 - Spark has to shuffle and materialize the bloated, duplicated result before it can even start deduplicating
@@ -158,7 +157,9 @@ result = claims_df.join(customers_dedup, "customer_id")
 - `dropDuplicates` runs on the smaller, pre-join table instead of the multiplied post-join output
 - Same result, but the join itself does far less work
 
-> **Combined Rule of thumb:** *If you're aggregating or deduplicating right after a join, ask whether you can do it before instead - the results are identical, but the join has far less work to do either way. Summarize and clean up your data first, let the join operate on the smallest, truest version of each side.*
+
+
+> **Pro Tip:** *If you're aggregating or deduplicating right after a join, ask whether you can do it before instead - the results are identical, but the join has far less work to do either way. Summarize and clean up your data first, let the join operate on the smallest, truest version of each side.*
 
 ## 4. Broadcast Only Genuinely Small Tables
 A broadcast join sends a full copy of one table to every machine in the cluster, avoiding a shuffle entirely. This is a great trick - but only if the table is small. Broadcasting a multi-gigabyte table can crash every executor at once.
@@ -175,9 +176,10 @@ df = claims_df.join(customers_df, "customer_id", "inner") \
     .join(hospitals_df, "hospital_id", "inner") \
     .join(payments_df, "claim_id", "left")
 ```
+<img src="./images/spark_optimization_4_0.png" width="100%" align="center" alt="Increased runtime without broadcasting" /><br>
 
 **Problem -**
-- Small, static dimension tables (`customers_df`, `policies_df`, `hospitals_df` - each just 6–10 rows here, but small relative to claims even at production scale) get shuffled every time, even though they rarely change and are tiny compared to claims
+- Small, static dimension tables (`customers_df`, `policies_df`, `hospitals_df` - each just 6-10 rows here, but small relative to claims even at production scale) get shuffled every time, even though they rarely change and are tiny compared to claims
 
 **Impact -**
 - Unnecessary shuffle cost on every join stage
@@ -189,19 +191,20 @@ from pyspark.sql.functions import broadcast
 
 base_df = (
     claims_df
-    .join(broadcast(customers_df), "customer_id", "inner")
-    .join(broadcast(policies_df),  "policy_id",   "inner")
-    .join(broadcast(hospitals_df), "hospital_id", "inner")
-    .join(payments_df, "claim_id", "left")  # only this one shuffles
+  . join(broadcast(customers_df), "customer_id", "inner")
+  . join(broadcast(policies_df), "policy_id", "inner")
+  . join(broadcast(hospitals_df), "hospital_id", "inner")
+  .join (payments_df, "claim_id", "left")  # only this one shuffles
 )
 ```
+<img src="./images/spark_optimization_4_1.png" width="100%" align="center" alt="Reduced runtime after broadcasting" /><br>
 
 **Benefits -**
 - No shuffle needed for the broadcast tables - huge speedup on those joins
 - `claims_df` (the large side) never needs to move, only the small tables are copied out
 - Leaves `payments_df` as the only real shuffle, since not every claim has a payment yet and it's not a good broadcast candidate at scale
 
-> **Rule of thumb:** *If you're not 100% sure a table is small, don't force a broadcast - let Spark's built-in threshold and AQE make that call for you based on real data size.*
+> **Pro Tip:** *If you're not 100% sure a table is small, don't force a broadcast - let Spark's built-in threshold and AQE make that call for you based on real data size.*
 
 ## 5. Detect & Fix Skewed Join Keys
 Sometimes one value in your join key - a specific customer, or a "null"/"unknown" placeholder - has way more rows than everything else combined. In our dataset, `customer_id = "C001"` accounts for 6 of the 15 claims. At production scale, imagine one customer (or a data quality "unknown" bucket) accounting for millions of rows while everyone else has a handful - one task ends up doing the bulk of the work while all other tasks finish and sit idle.
@@ -219,6 +222,10 @@ result = claims_df.join(customers_df, "customer_id", "inner")
 # the C001 partition gets overloaded while every other task finishes quickly
 ```
 
+<img src="./images/spark_optimization_5_0.png" width="80%" align="center" alt="Skewed Join Unoptimized query plan" /><br>
+
+<img src="./images/spark_optimization_5_1.png" width="80%" align="center" alt="skewed Join Unoptimized Build Time" /><br>
+
 **Problem -**
 - One `customer_id` value dominates the dataset, so its partition is far larger than every other partition
 
@@ -233,6 +240,11 @@ spark.conf.set("spark.sql.adaptive.skewJoin.enabled", "true")
 
 result = claims_df.join(customers_df, "customer_id", "inner")
 ```
+<img src="./images/spark_optimization_5_3.png" width="80%" align="center" alt="skewed Join optimized query plan" /><br>
+
+<img src="./images/spark_optimization_5_2.png" width="80%" align="center" alt="skewed Join optimized Build Time" /><br>
+
+AQE automatically detects skewed partitions at runtime and splits them into smaller, evenly-sized pieces before the join executes - spreading the hot key's workload across multiple tasks instead of overloading one, which reduces the overall build time.
 
 **After (Option 2), manual salting:**
 ```python
@@ -265,7 +277,7 @@ result = joined.drop("customer_salt", "salt_val")
 - Stage completion time is driven by average load, not by the single worst partition
 - Other tasks no longer sit idle waiting on the skewed one
 
-> **Rule of thumb:** *Try AQE's skew join handling first on Spark 3.x+ - it often fixes this with zero code changes. Fall back to manual salting only if AQE isn't available or doesn't fully resolve it.*
+> **Pro Tip:** *Try AQE's skew join handling first on Spark 3.x+ - it often fixes this with zero code changes. Fall back to manual salting only if AQE isn't available or doesn't fully resolve it.*
 
 ## 6. Partition for the Next Expensive Operation
 Repartitioning isn't inherently an optimization. It only helps when the partitioning you create benefits an expensive operation that follows. The key is to "look to the right" in the pipeline: before repartitioning, ask what the next join, aggregation, window, or other shuffle-heavy operation needs.
@@ -276,25 +288,26 @@ Repartitioning on a key that helps one operation but immediately becomes irrelev
 
 **Before, repartitioning without looking ahead:**
 ```python
-from pyspark.sql import Window
-from pyspark.sql.functions import rank, col
-
-# Repartitioned for the join...
+# Repartitioned by policy_id "to help the join"...
 claims_df = claims_df.repartition("policy_id")
 
-result = claims_df.join(policies_df, "policy_id", "inner")
+policies_df = policies_df.drop(F.col("customer_id"))
+claims_joined = claims_df.join(policies_df, "policy_id")
 
-# ...but the next expensive operation uses hospital_id
-w = Window.partitionBy("hospital_id").orderBy(
-    col("claim_amount").desc()
-)
+# ...but BOTH window functions immediately after need customer_id partitioning,
+# which doesn't match what we just shuffled for
+w_amount = Window.partitionBy("customer_id").orderBy(F.col("claim_amount").desc())
+w_date   = Window.partitionBy("customer_id").orderBy("claim_date")
 
-ranked = result.withColumn("claim_rank", rank().over(w))
+ranked    = claims_joined.withColumn("amount_rank", F.rank().over(w_amount))
+sequenced = ranked.withColumn("claim_seq", F.row_number().over(w_date))
 ```
+
+<img src="./images/spark_optimization_6_0.png" width="80%" align="center" alt="Repartioning Unoptimized Build Time" /><br>
 
 **Problem -**
 - Data is shuffled by `policy_id` even though that partitioning does not help the next operation
-- The window requires data to be partitioned by `hospital_id`, triggering another shuffle
+- The window requires data to be partitioned by `customer_id`, triggering another shuffle
 - The original repartition effectively gets discarded as soon as the window needs a different distribution
 
 **Impact -**
@@ -304,18 +317,21 @@ ranked = result.withColumn("claim_rank", rank().over(w))
 
 **After, partition for what comes next:**
 ```python
-# Let Spark handle the join based on its join strategy
-result = claims_df.join(policies_df, "policy_id", "inner")
+# Repartitioned by policy_id "to help the join"...
+claims_df = claims_df.repartition("policy_id")
+policies_df = policies_df.drop(F.col("customer_id"))
+claims_joined = claims_df.join(policies_df, "policy_id")
 
-# Repartition immediately before the expensive operation that needs it
-result = result.repartition("hospital_id")
+# Repartition ONCE, on the key that serves BOTH upcoming window functions
+claims_repartitioned = claims_joined.repartition("customer_id")
 
-w = Window.partitionBy("hospital_id").orderBy(
-    col("claim_amount").desc()
-)
+w_amount = Window.partitionBy("customer_id").orderBy(F.col("claim_amount").desc())
+w_date   = Window.partitionBy("customer_id").orderBy("claim_date")
 
-ranked = result.withColumn("claim_rank", rank().over(w))
+ranked    = claims_repartitioned.withColumn("amount_rank", F.rank().over(w_amount))
+sequenced = ranked.withColumn("claim_seq", F.row_number().over(w_date))
 ```
+<img src="./images/spark_optimization_6_1.png" width="80%" align="center" alt="Repartitioning Unoptimized Build Time" /><br>
 
 **Benefits -**
 - The manual repartition directly supports the next expensive operation
@@ -336,7 +352,7 @@ filtered.write.mode("overwrite").parquet("output_path")
 
 `repartition()` performs a shuffle and is appropriate when you need to change the distribution or increase/rebalance partitions. `coalesce()` can reduce the number of partitions without a full shuffle and is often the better choice when you're simply shrinking the partition count.
 
-> **Rule of thumb:** *Look to the right. Before repartitioning, identify the next expensive operation and the distribution it needs. Don't carry a partitioning strategy through the pipeline just because it was useful earlier.*
+> **Pro Tip:** *Look to the right. Before repartitioning, identify the next expensive operation and the distribution it needs. Don't carry a partitioning strategy through the pipeline just because it was useful earlier.*
 
 ## 7. Never collect() Large Results
 `collect()` pulls all the data from across the cluster back onto a single machine - the driver. This works fine for small results, but pulling millions of rows onto one machine will exhaust its memory and crash the job.
@@ -360,23 +376,22 @@ for row in all_claims:
 - Driver runs out of memory and crashes, often with no obvious link back to `collect()`
 - Loses the benefit of distributed processing entirely
 
-![driver_oom_crash](images/spark_optimization_7_1.png)
+<img src="./images/spark_optimization_7_0.png" width="100%" align="center" alt="Collect() causing OOM error" /><br>
 
 **After, keep the data distributed, flow it to a sink:**
 ```python
-# Data stays distributed, written straight to a sink
-claims_df.write.mode("overwrite").parquet("s3://bucket/claims_output/")
+# Use spark native function to collect results - collect_set/collect_list
+claims_df.groupBy("claim_id").agg(collect_set("claim_category"))
 
 # If you genuinely need a small, bounded sample - limit() first, then collect
 sample_rows = claims_df.limit(100).collect()
 ```
 
 **Benefits -**
-- Writes scale to any data size without risking driver OOM
-- Work stays parallelized across the cluster
+- Using spark native function to collect results ensures parallelized processing and not overloading the Driver
 - `limit()` before `collect()` gives a safe way to sample data
 
-> **Rule of thumb:** *Think of the driver as a coordinator, not a worker. Data should stay distributed and flow to a sink - it shouldn't round-trip through a single machine unless it's genuinely small and bounded.*
+> **Pro Tip:** *Think of the driver as a coordinator, not a worker. Data should stay distributed and flow to a sink - it shouldn't round-trip through a single machine unless it's genuinely small and bounded.*
 
 ## 8. Caching & Persisting
 Caching keeps data in memory, so you don't have to recompute it every time you use it - great when you reuse the same DataFrame multiple times. But if you never release that memory (`unpersist()`), it sits there indefinitely, crowding out memory that later stages need for their own work.
@@ -387,19 +402,37 @@ Cached data occupies "storage memory" in each executor. If it's never released, 
 
 **Before:**
 ```python
-customer_stats = claims_df.groupBy("customer_id").agg(
+enriched = (
+    claims_df
+        .join(policies_df, "policy_id")
+        .join(customers_df, "customer_id")
+        .filter(F.col("claim_amount").isNotNull())
+)
+
+# Each of these triggers the FULL join chain above from scratch -
+# Spark has no memory of the previous run's shuffle output
+by_customer = enriched.groupBy("customer_id").agg(
     F.sum("claim_amount").alias("total_claims"),
     F.count("*").alias("claim_count")
-)  # recompute #1
+)
+by_cust.write_dataframe(by_customer)
 
-hospital_stats = claims_df.groupBy("hospital_id").agg(
+by_hospital = enriched.groupBy("hospital_id").agg(
     F.sum("claim_amount").alias("hospital_claims")
-)  # recompute #2 - claims_df is re-read and re-processed from the start
+)
+by_hosp.write_dataframe(by_hospital)
+
+by_state = enriched.groupBy("customer_state").agg(
+    F.avg("claim_amount").alias("avg_claim_amount")
+)
+by_st.write_dataframe(by_state)
 ```
+<img src="./images/spark_optimization_8_0.png" width="100%" align="center" alt="Without caching multiple stages and disk spillage" /><br>
 
 **Problem -**
 - `claims_df` (and whatever transformation chain built it) is recomputed from scratch for every downstream action that uses it
 - Spark has no memory of the earlier work - each `groupBy` triggers its own full read/transform pass
+- Multiple stages and disk spillage
 
 **Impact -**
 - The same expensive upstream computation (joins, filters, salting, etc.) runs twice, tripling cost if reused a third time
@@ -409,23 +442,40 @@ hospital_stats = claims_df.groupBy("hospital_id").agg(
 ```python
 from pyspark import StorageLevel
 
-# Persist after the expensive joins/filters, before multiple reuses
-salted_df = claims_df.persist(StorageLevel.MEMORY_AND_DISK)
+enriched = (
+    claims_df
+    .join(policies_df, "policy_id")
+    .join(customers_df, "customer_id")
+    .filter(F.col("claim_amount").isNotNull())
+    .persist(StorageLevel.MEMORY_AND_DISK)
+)
 
-customer_stats = salted_df.groupBy("customer_id").agg(
+enriched.count()  # force materialization ONCE - this is the only time the join chain runs
+
+by_customer = enriched.groupBy("customer_id").agg(
     F.sum("claim_amount").alias("total_claims"),
     F.count("*").alias("claim_count")
 )
-hospital_stats = salted_df.groupBy("hospital_id").agg(
+by_cust.write_dataframe(by_customer)
+
+by_hospital = enriched.groupBy("hospital_id").agg(
     F.sum("claim_amount").alias("hospital_claims")
 )
+by_hosp.write_dataframe(by_hospital)
 
-# Release memory the moment you're done reusing it
-salted_df.unpersist()
+by_state = enriched.groupBy("customer_state").agg(
+    F.avg("claim_amount").alias("avg_claim_amount")
+)
+by_st.write_dataframe(by_state)
+
+# Release the memory immediately - we're done reusing "enriched" past this point
+enriched.unpersist()
 ```
 
+<img src="./images/spark_optimization_8_1.png" width="100%" align="center" alt="Performance improvement after caching" /><br>
+
 **Benefits -**
-- The expensive upstream chain runs once, no matter how many times `salted_df` is reused afterward
+- The expensive upstream chain runs once, no matter how many times `enriched` is reused afterward
 - `unpersist()` frees storage memory immediately, leaving more room for execution memory in later stages
 - Reduces the risk of spills during joins/sorts/aggregations that come after this point in the pipeline
 
@@ -436,7 +486,7 @@ salted_df.unpersist()
 - **MEMORY_AND_DISK_SER:** Serialized in memory + disk fallback. Saves memory with moderate performance.
 - **DISK_ONLY:** Stores only on disk. Most reliable, slowest access.
 
-> **Rule of thumb:** *When you cache something, mentally mark the point where you're done with it - and call unpersist() right there, not at the end of the script (or never, which is what usually happens by accident).*
+> **Pro Tip:** *When you cache something, mentally mark the point where you're done with it - and call unpersist() right there, not at the end of the script (or never, which is what usually happens by accident).*
 
 ## 9. Minimize Materialization & Execution-Boundary Changes
 Every time you write data to disk and then read it back in the middle of a pipeline, you create a hard stop that Spark's optimizer can't see across. You also pay real disk I/O costs that add up fast - disk and network operations are dramatically slower than staying in memory.
@@ -531,26 +581,10 @@ ranked_df.unpersist()
 - Global sort happens only once, on the smaller final output instead of the full dataset
 - Fewer shuffles overall, leading to a faster pipeline
 
-> **Rule of thumb:** *Compute shared logic once and reuse the result across branches. Save global sorting for the very end of the pipeline, and only when the final output genuinely requires strict ordering.*
+> **Pro Tip:** *Compute shared logic once and reuse the result across branches. Save global sorting for the very end of the pipeline, and only when the final output genuinely requires strict ordering.*
 
-## A Note on Measuring Impact
-The broadcast join example above showed a clear, measurable improvement (7m 46s → 5m 35s) because shuffle avoidance has real, fixed I/O and network costs that show up even on modest datasets, as shown below:
-
-**Before, sort-merge joins on all dimension tables:**
-
-![sort_merge_join_timing](images/spark_optimization_note_1.png)
-
-**After, broadcast joins on small dimension tables:**
-
-![broadcast_join_timing](images/spark_optimization_note_2.png)
-
-Most of the other anti-patterns in this list - column pruning, filtering before joins, deduplication order, partitioning strategy, caching discipline - follow the exact same mechanical logic (less data moved, less redundant compute, fewer shuffles). On the small dataset used for these examples, their impact is real but not always large enough to show up as a dramatic wall-clock difference. At production scale - millions of rows instead of tens - these same patterns compound and become the difference between a job that finishes in minutes and one that spills, skews, or OOMs.
-
-> **Rule of thumb:** *Don't wait for a benchmark to justify these practices. They're structurally cheaper by design - the savings simply become visible sooner on some (like broadcast joins) than others (like column pruning), depending on data volume.*
 
 ## Summary
-
-Spark performance is ultimately about doing less work, moving less data, and using resources wisely. The best optimizations often come from simple choices: filter early, join intelligently, avoid unnecessary shuffles, keep data distributed, and let Catalyst and AQE do what they do best. Write Spark code with the execution plan in mind, not just the result.
 
 **Quick Reference:**
 
@@ -568,3 +602,5 @@ Spark performance is ultimately about doing less work, moving less data, and usi
 | 8 | `cache()` never released | `unpersist()` right after last use | Storage vs. execution memory |
 | 9 | Intermediate disk read/write | Keep pipeline as one continuous plan | Catalyst whole-plan optimization |
 | 10 | Repeated sort/window calc | Compute once, sort last | Avoid redundant shuffle and recompute |
+
+Spark performance is ultimately about doing less work, moving less data, and using resources wisely. The best optimizations often come from simple choices: filter early, join intelligently, avoid unnecessary shuffles, keep data distributed, and let Catalyst and AQE do what they do best. Write Spark code with the execution plan in mind, not just the result.
