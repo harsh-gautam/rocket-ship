@@ -30,9 +30,9 @@ result = (
 )
 ```
 
-<img src="./images/spark_optimization_1_0.png" width="50%" align="center" alt="Pruning & Predicate Pushdown Unoptimized Query Plan" /><br>
+<img src="./images/spark_optimization_1_0.png" width="30%" align="center" alt="Pruning & Predicate Pushdown Unoptimized Query Plan" /><br>
 
-<img src="./images/spark_optimization_1_1.png" width="80%" align="center" alt="Pruning & Predicate Pushdown Unoptimized build time" /><br>
+<img src="./images/spark_optimization_1_1.png" width="60%" align="center" alt="Pruning & Predicate Pushdown Unoptimized build time" /><br>
 
 **Problem -** Full datasets loaded into memory, all rows carried through the join causing unnecessary memory overhead & I/O
 
@@ -52,9 +52,9 @@ result = (
 )
 ```
 
-<img src="./images/spark_optimization_1_3.png" width="50%" align="center" alt="Pruning & Predicate Pushdown optimized Query Plan" /><br>
+<img src="./images/spark_optimization_1_3.png" width="30%" align="center" alt="Pruning & Predicate Pushdown optimized Query Plan" /><br>
 
-<img src="./images/spark_optimization_1_2.png" width="80%" align="center" alt="Pruning & Predicate Pushdown optimized build time" /><br>
+<img src="./images/spark_optimization_1_2.png" width="60%" align="center" alt="Pruning & Predicate Pushdown optimized build time" /><br>
 
 **Benefits -** Drastically reduced memory footprint and nulls never the join at all
 
@@ -71,7 +71,7 @@ result = claims_df.crossJoin(hospitals_df) \
     .filter(claims_df.state == hospitals_df.hospital_state) \
     .filter(hospitals_df.hospital_active == True)
 ```
-<img src="./images/spark_optimization_2_0.png" width="80%" align="center" alt="Cross Join Unoptimized Build Time" /><br>
+<img src="./images/spark_optimization_2_0.png" width="60%" align="center" alt="Cross Join Unoptimized Build Time" /><br>
 
 **Problem -** Every claim gets paired with every hospital before any filtering happens. With no join key, Spark can't use an efficient join strategy - it's forced into a brute-force nested loop. The filter condition (state == state) reveals there was a real join key all along; it just got applied too late.
 
@@ -89,7 +89,7 @@ result = claims_df.join(
 )
 ```
 
-<img src="./images/spark_optimization_2_1.png" width="80%" align="center" alt="Cross Join Unoptimized Build Time" /><br>
+<img src="./images/spark_optimization_2_1.png" width="60%" align="center" alt="Cross Join Unoptimized Build Time" /><br>
 
 **Benefits -** With a real join key in place, Spark can choose an efficient strategy - sort-merge or broadcast join - instead of brute-forcing every pairing, keeping row count proportional to matching keys rather than the full cross product. Filtering out the inactive hospital (H004) beforehand shrinks the build side further, reducing both shuffle volume and memory pressure.
 
@@ -108,7 +108,7 @@ result = (
     .agg(F.sum("claim_amount").alias("total_claims"))
 )
 ```
-<img src="./images/spark_optimization_3_1.png" width="80%" align="center" alt="Aggregate Unoptimized Build Time" /><br>
+<img src="./images/spark_optimization_3_1.png" width="60%" align="center" alt="Aggregate Unoptimized Build Time" /><br>
 
 **Problem -** The join runs on every raw claim row instead of the final summarized rows, and unnecessary customer columns participate in the join, adding memory pressure and shuffle overhead.
 
@@ -122,7 +122,7 @@ agg_claims = claims_df.groupBy("customer_id") \
 result = agg_claims.join(customers_df, "customer_id")
 ```
 
-<img src="./images/spark_optimization_3_0.png" width="80%" align="center" alt="Cross Join Unoptimized Build Time" /><br>
+<img src="./images/spark_optimization_3_0.png" width="60%" align="center" alt="Cross Join Unoptimized Build Time" /><br>
 
 **Benefits -** The join now operates on far fewer rows - one per customer, not one per claim - resulting in a smaller shuffle, less memory pressure, and faster runtime. The result stays the same, since aggregation and join order don't change correctness here.
 
@@ -176,7 +176,7 @@ df = claims_df.join(customers_df, "customer_id", "inner") \
     .join(hospitals_df, "hospital_id", "inner") \
     .join(payments_df, "claim_id", "left")
 ```
-<img src="./images/spark_optimization_4_0.png" width="100%" align="center" alt="Increased runtime without broadcasting" /><br>
+<img src="./images/spark_optimization_4_0.png" width="60%" align="center" alt="Increased runtime without broadcasting" /><br>
 
 **Problem -**
 - Small, static dimension tables (`customers_df`, `policies_df`, `hospitals_df` - each just 6-10 rows here, but small relative to claims even at production scale) get shuffled every time, even though they rarely change and are tiny compared to claims
@@ -197,7 +197,7 @@ base_df = (
   .join (payments_df, "claim_id", "left")  # only this one shuffles
 )
 ```
-<img src="./images/spark_optimization_4_1.png" width="100%" align="center" alt="Reduced runtime after broadcasting" /><br>
+<img src="./images/spark_optimization_4_1.png" width="60%" align="center" alt="Reduced runtime after broadcasting" /><br>
 
 **Benefits -**
 - No shuffle needed for the broadcast tables - huge speedup on those joins
@@ -222,9 +222,9 @@ result = claims_df.join(customers_df, "customer_id", "inner")
 # the C001 partition gets overloaded while every other task finishes quickly
 ```
 
-<img src="./images/spark_optimization_5_0.png" width="80%" align="center" alt="Skewed Join Unoptimized query plan" /><br>
+<img src="./images/spark_optimization_5_0.png" width="60%" align="center" alt="Skewed Join Unoptimized query plan" /><br>
 
-<img src="./images/spark_optimization_5_1.png" width="80%" align="center" alt="skewed Join Unoptimized Build Time" /><br>
+<img src="./images/spark_optimization_5_1.png" width="60%" align="center" alt="skewed Join Unoptimized Build Time" /><br>
 
 **Problem -**
 - One `customer_id` value dominates the dataset, so its partition is far larger than every other partition
@@ -240,9 +240,9 @@ spark.conf.set("spark.sql.adaptive.skewJoin.enabled", "true")
 
 result = claims_df.join(customers_df, "customer_id", "inner")
 ```
-<img src="./images/spark_optimization_5_3.png" width="80%" align="center" alt="skewed Join optimized query plan" /><br>
+<img src="./images/spark_optimization_5_3.png" width="60%" align="center" alt="skewed Join optimized query plan" /><br>
 
-<img src="./images/spark_optimization_5_2.png" width="80%" align="center" alt="skewed Join optimized Build Time" /><br>
+<img src="./images/spark_optimization_5_2.png" width="60%" align="center" alt="skewed Join optimized Build Time" /><br>
 
 AQE automatically detects skewed partitions at runtime and splits them into smaller, evenly-sized pieces before the join executes - spreading the hot key's workload across multiple tasks instead of overloading one, which reduces the overall build time.
 
@@ -303,7 +303,7 @@ ranked    = claims_joined.withColumn("amount_rank", F.rank().over(w_amount))
 sequenced = ranked.withColumn("claim_seq", F.row_number().over(w_date))
 ```
 
-<img src="./images/spark_optimization_6_0.png" width="80%" align="center" alt="Repartioning Unoptimized Build Time" /><br>
+<img src="./images/spark_optimization_6_0.png" width="60%" align="center" alt="Repartioning Unoptimized Build Time" /><br>
 
 **Problem -**
 - Data is shuffled by `policy_id` even though that partitioning does not help the next operation
@@ -331,7 +331,7 @@ w_date   = Window.partitionBy("customer_id").orderBy("claim_date")
 ranked    = claims_repartitioned.withColumn("amount_rank", F.rank().over(w_amount))
 sequenced = ranked.withColumn("claim_seq", F.row_number().over(w_date))
 ```
-<img src="./images/spark_optimization_6_1.png" width="80%" align="center" alt="Repartitioning Unoptimized Build Time" /><br>
+<img src="./images/spark_optimization_6_1.png" width="60%" align="center" alt="Repartitioning Unoptimized Build Time" /><br>
 
 **Benefits -**
 - The manual repartition directly supports the next expensive operation
@@ -376,7 +376,7 @@ for row in all_claims:
 - Driver runs out of memory and crashes, often with no obvious link back to `collect()`
 - Loses the benefit of distributed processing entirely
 
-<img src="./images/spark_optimization_7_0.png" width="100%" align="center" alt="Collect() causing OOM error" /><br>
+<img src="./images/spark_optimization_7_0.png" width="60%" align="center" alt="Collect() causing OOM error" /><br>
 
 **After, keep the data distributed, flow it to a sink:**
 ```python
@@ -427,7 +427,7 @@ by_state = enriched.groupBy("customer_state").agg(
 )
 by_st.write_dataframe(by_state)
 ```
-<img src="./images/spark_optimization_8_0.png" width="100%" align="center" alt="Without caching multiple stages and disk spillage" /><br>
+<img src="./images/spark_optimization_8_0.png" width="60%" align="center" alt="Without caching multiple stages and disk spillage" /><br>
 
 **Problem -**
 - `claims_df` (and whatever transformation chain built it) is recomputed from scratch for every downstream action that uses it
@@ -472,7 +472,7 @@ by_st.write_dataframe(by_state)
 enriched.unpersist()
 ```
 
-<img src="./images/spark_optimization_8_1.png" width="100%" align="center" alt="Performance improvement after caching" /><br>
+<img src="./images/spark_optimization_8_1.png" width="60%" align="center" alt="Performance improvement after caching" /><br>
 
 **Benefits -**
 - The expensive upstream chain runs once, no matter how many times `enriched` is reused afterward
@@ -528,7 +528,7 @@ result = (
 - No intermediate disk write/read round-trip, saving real I/O time
 - Fewer moving parts in the pipeline - one plan instead of two disconnected ones to reason about and debug
 
-> **Rule of thumb:** *Let Spark see the whole pipeline before it must hit disk. Only materialize intermediate results when you genuinely need to (checkpointing for fault tolerance, sharing across separate jobs) - not as a default habit.*
+> **Pro Tip:** *Let Spark see the whole pipeline before it must hit disk. Only materialize intermediate results when you genuinely need to (checkpointing for fault tolerance, sharing across separate jobs) - not as a default habit.*
 
 ## 10. Avoid Unnecessary Global Sorts & Repeated Calculations
 Sorting your entire dataset (`orderBy`) requires a full shuffle to get everything in the right order across the cluster - it's one of the most expensive things you can ask Spark to do. Doing this more than once or recalculating the same derived column or window function in multiple places means paying that cost repeatedly for no added benefit.
