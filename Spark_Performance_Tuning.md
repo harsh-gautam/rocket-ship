@@ -1,6 +1,10 @@
 # 10 Spark Anti-Patterns That Kill Performance (And How to Fix Them)
 
-## Contributiors:
+## Contributors:
+1. [Harsh Gautam](https://github.com/harsh-gautam), [LinkedIn](https://www.linkedin.com/in/harsh-gautam27/)
+2. [Shruti Raj](https://github.com/shrutiraj25), [LinkedIn](http://linkedin.com/in/shruti-raj7)
+3. [Vrinda Makkar](https://github.com/vrindamakkar), [LinkedIn](https://www.linkedin.com/in/vrinda-makkar/)
+4. [Jaya Chandran](https://github.com/Jayachandran9283), [LinkedIn](https://www.linkedin.com/in/jaya-chandran-s-7ab3bab8?utm_source=share&utm_campaign=share_via&utm_content=profile&utm_medium=ios_app)
 
 ## Introduction
 If you've spent any real time running Spark jobs in production, you've hit at least one of these walls: a job that silently balloons from 10 minutes to 4 hours, a driver that OOMs for no obvious reason, or a single task that runs 100x longer than every other task in its stage. These aren't bad luck - they're almost always the result of a handful of recurring anti-patterns.
@@ -34,9 +38,13 @@ result = (
 
 <img src="./images/spark_optimization_1_1.png" width="60%" align="center" alt="Pruning & Predicate Pushdown Unoptimized build time" /><br>
 
-**Problem -** Full datasets loaded into memory, all rows carried through the join causing unnecessary memory overhead & I/O
+**Problem -** 
+- Full datasets loaded into memory
+- All rows carried through the join causing unnecessary memory overhead & I/O
 
-**Impact -** Null `claim_amount` rows (CLM005, CLM009) participate in the join before being dropped and wasted compute resources moving columns nobody asked for
+**Impact -** 
+- Null `claim_amount` rows (CLM005, CLM009) participate in the join before being dropped
+- Wasted compute resources moving columns nobody asked for
 
 **After, prune unused columns and filter early:**
 ```python
@@ -56,7 +64,8 @@ result = (
 
 <img src="./images/spark_optimization_1_2.png" width="60%" align="center" alt="Pruning & Predicate Pushdown optimized build time" /><br>
 
-**Benefits -** Drastically reduced memory footprint and nulls never the join at all
+**Benefits -** 
+- Drastically reduced memory footprint and nulls never the join at all
 
 > **Pro Tip:** *Spark's Catalyst optimizer pushes filters and column selections down to the file scan automatically - but only when it can prove doing so is safe. The moment a UDF, an outer join, or a non-deterministic expression is involved, that guarantee disappears. Making a habit of writing filters and select() statements before a join or UDF, rather than relying on Catalyst to rearrange them, keeps performance consistent and predictable across production pipelines - same result, far less data shuffled.*
 
@@ -73,9 +82,14 @@ result = claims_df.crossJoin(hospitals_df) \
 ```
 <img src="./images/spark_optimization_2_0.png" width="60%" align="center" alt="Cross Join Unoptimized Build Time" /><br>
 
-**Problem -** Every claim gets paired with every hospital before any filtering happens. With no join key, Spark can't use an efficient join strategy - it's forced into a brute-force nested loop. The filter condition (state == state) reveals there was a real join key all along; it just got applied too late.
+**Problem -** 
+- Every claim gets paired with every hospital before any filtering happens. 
+- With no join key, Spark can't use an efficient join strategy - it's forced into a brute-force nested loop. 
+- The filter condition (state == state) reveals there was a real join key all along; it just got applied too late.
 
-**Impact -** Row count explodes before the filter can discard most of it - with 15 claims × 6 hospitals that's only 90 rows here, but at production scale (millions of claims × thousands of hospitals), this becomes untenable. Massive shuffle and compute get spent building rows that never survive the filter, creating a high risk of executor OOM or a stage that never finishes as data volumes grow.
+**Impact -** 
+- Row count explodes before the filter can discard most of it - with 15 claims × 6 hospitals that's only 90 rows here, but at production scale (millions of claims × thousands of hospitals), this becomes untenable. 
+- Massive shuffle and compute get spent building rows that never survive the filter, creating a high risk of executor OOM or a stage that never finishes as data volumes grow.
 
 **After:**
 ```python
@@ -91,7 +105,9 @@ result = claims_df.join(
 
 <img src="./images/spark_optimization_2_1.png" width="60%" align="center" alt="Cross Join Unoptimized Build Time" /><br>
 
-**Benefits -** With a real join key in place, Spark can choose an efficient strategy - sort-merge or broadcast join - instead of brute-forcing every pairing, keeping row count proportional to matching keys rather than the full cross product. Filtering out the inactive hospital (H004) beforehand shrinks the build side further, reducing both shuffle volume and memory pressure.
+**Benefits -** 
+- With a real join key in place, Spark can choose an efficient strategy - sort-merge or broadcast join - instead of brute-forcing every pairing, keeping row count proportional to matching keys rather than the full cross product. 
+- Filtering out the inactive hospitals beforehand shrinks the build side further, reducing both shuffle volume and memory pressure.
 
 > **Pro Tip:** *If you're filtering right after a crossJoin, that filter condition is almost always meant to be your join key. Use join() with a real condition instead.*
 
@@ -110,9 +126,13 @@ result = (
 ```
 <img src="./images/spark_optimization_3_1.png" width="60%" align="center" alt="Aggregate Unoptimized Build Time" /><br>
 
-**Problem -** The join runs on every raw claim row instead of the final summarized rows, and unnecessary customer columns participate in the join, adding memory pressure and shuffle overhead.
+**Problem -** 
+- The join runs on every raw claim row instead of the final summarized rows.
+- Unnecessary customer columns participate in the join, adding memory pressure and shuffle overhead.
 
-**Impact -** Shuffle scales with total claims (15 rows here, millions in production) instead of distinct customers (10 rows here), wasting compute on joining detail that gets discarded right after.
+**Impact -** 
+- Shuffle scales with total claims (15 rows here, millions in production) instead of distinct customers (10 rows here), 
+- Wasted compute on joining detail that gets discarded right after.
 
 **After:**
 ```python
@@ -124,7 +144,9 @@ result = agg_claims.join(customers_df, "customer_id")
 
 <img src="./images/spark_optimization_3_0.png" width="60%" align="center" alt="Cross Join Unoptimized Build Time" /><br>
 
-**Benefits -** The join now operates on far fewer rows - one per customer, not one per claim - resulting in a smaller shuffle, less memory pressure, and faster runtime. The result stays the same, since aggregation and join order don't change correctness here.
+**Benefits -** 
+- The join now operates on far fewer rows - one per customer, not one per claim - resulting in a smaller shuffle, less memory pressure, and faster runtime. 
+- The result stays the same, since aggregation and join order don't change correctness here.
 
 ### Part B: Deduplicate Before Joining
 Duplicates are just as costly as unaggregated details - a customer record ingested twice by an upstream system causes a fan-out on every join, multiplying rows that get discarded moments later anyway.
@@ -142,7 +164,7 @@ result = claims_df.join(customers_df, "customer_id") \
 - Spark has to shuffle and materialize the bloated, duplicated result before it can even start deduplicating
 
 **Impact -**
-- If C003 has 2 duplicate rows, every one of C003's claims gets doubled in the join output - pure noise thrown away right after
+- For every duplicate rows, each claims gets doubled in the join output - pure noise thrown away right after
 - Wasted shuffle, memory, and compute spent building rows that never survive the final `dropDuplicates`
 - At production scale, even a 1–2% duplicate rate on a dimension table can meaningfully inflate shuffle volume
 
