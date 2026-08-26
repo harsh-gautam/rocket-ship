@@ -508,7 +508,11 @@ enriched.unpersist()
 - **MEMORY_AND_DISK_SER:** Serialized in memory + disk fallback. Saves memory with moderate performance.
 - **DISK_ONLY:** Stores only on disk. Most reliable, slowest access.
 
-> **Pro Tip:** *When you cache something, mentally mark the point where you're done with it - and call unpersist() right there, not at the end of the script (or never, which is what usually happens by accident).*
+**When to use checkpoint()**
+checkpoint() materializes a copy of dataframe which all the transfomations happened before, truncating the lineage entirely. Spark writes the DataFrame to durable, fault-tolerant storage, and any DataFrame derived from it afterward starts fresh from that checkpoint, with no memory of how it was originally produced.This also makes it meaningfully more failure-resilient than persist(): if a later step fails, Spark only needs to re-read from the checkpoint rather than replaying the entire upstream chain.
+
+
+> **Pro Tip:** *When you cache something, mentally mark the point where you're done with it, and call unpersist() right there - not at the end of the script, and not never, which is what usually happens by accident. More broadly: use persist() for reuse within a job, and reach for checkpoint() only when the lineage is long or fragile enough that truncating it before a risky next step is worth the I/O cost - don't checkpoint out of habit on a short, cheap chain where persist() alone would do.*
 
 ## 9. Minimize Materialization & Execution-Boundary Changes
 Every time you write data to disk and then read it back in the middle of a pipeline, you create a hard stop that Spark's optimizer can't see across. You also pay real disk I/O costs that add up fast - disk and network operations are dramatically slower than staying in memory.
@@ -519,36 +523,52 @@ Catalyst works by looking at your entire chain of transformations and finding th
 
 **Before, unnecessary intermediate write breaks the plan in two:**
 ```python
-claims_df.filter(col("claim_amount").isNotNull()) \
-    .write.mode("overwrite").parquet("/tmp/staging/claims_filtered")
+enriched = (
+    claims_df
+    .join(policies_df, "policy_id")
+    .join(customers_df, "customer_id")
+    .filter(F.col("claim_amount").isNotNull())
+)
 
-# Reading it back forces a brand-new, disconnected execution plan
-staged_df = spark.read.parquet("/tmp/staging/claims_filtered")
-result = staged_df.join(customers_df, "customer_id")
+enriched = enriched.checkpoint()
+
+result = (
+    enriched
+    .join(hostpitals, "hospital_id")
+    .filter(col("hospital_active") == true)
+)
 ```
 
 **Problem -**
-- The write and subsequent read split what could be one logical plan into two separate, disconnected plans
-- Catalyst optimizes each plan in isolation - it never sees the filter and the join as part of the same chain
+- checkpoint() used out of habit, on a short chain with no long lineage to protect and no risky step downstream to justify it
+- Forces enriched to materialize to durable storage, severing the lineage at that point
+- Catalyst can no longer see the joins and filters before/after the checkpoint as one connected chain
 
 **Impact -**
-- Disk I/O cost is paid twice - once to write the intermediate data, once to read it back
-- Catalyst can't optimize across the write boundary, so cross-step optimizations (like pushing the filter further down or choosing a join strategy based on filtered size) are lost
-- The extra disk round-trip plus the missed optimizations combine to slow down end-to-end runtime
+- Unnecessary write-then-read round trip adds real disk I/O with no fault-tolerance benefit worth having
+- hospital_active filter can't be pushed down into the hospitals_df scan
+- Join strategy can't be chosen based on actual filtered row counts
 
 **After, one continuous pipeline, optimized as a whole:**
 ```python
-result = (
+enriched = (
     claims_df
-    .filter(col("claim_amount").isNotNull())
+    .join(policies_df, "policy_id")
     .join(customers_df, "customer_id")
+    .filter(F.col("claim_amount").isNotNull())
+)
+result = (
+    enriched
+    .join(hostpitals, "hospital_id")
+    .filter(col("hospital_active") == true)
 )
 ```
 
 **Benefits -**
-- Catalyst sees the filter and join as one unit and can optimize them jointly (e.g., pushing the filter into the scan, choosing the best join strategy based on real filtered size)
-- No intermediate disk write/read round-trip, saving real I/O time
-- Fewer moving parts in the pipeline - one plan instead of two disconnected ones to reason about and debug
+- Catalyst sees both joins and both filters as one logical plan
+- hospital_active == True gets pushed down into the hospitals_df scan
+- Join strategy is chosen using real, filtered row counts, not pre-filter estimates
+- No intermediate write/read round trip - one plan instead of two disconnected ones, simpler to reason about and debug
 
 > **Pro Tip:** *Let Spark see the whole pipeline before it must hit disk. Only materialize intermediate results when you genuinely need to (checkpointing for fault tolerance, sharing across separate jobs) - not as a default habit.*
 
